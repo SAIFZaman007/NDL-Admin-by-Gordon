@@ -1,18 +1,3 @@
-# Pins the Node.js version Nixpacks installs during the build.
-#
-# Why this exists: Nixpacks only lets you request a major version (e.g. "22")
-# via NIXPACKS_NODE_VERSION, engines.node, or .nvmrc — the exact minor/patch
-# version actually installed comes from whichever nixpkgs snapshot Nixpacks
-# uses internally, which currently resolves Node 22 to 22.11.0. Several of
-# this project's build tools (@vitejs/plugin-react, oxlint, rolldown, vite)
-# declare "engines": { "node": "^20.19.0 || >=22.12.0" } — so 22.11.0 is just
-# below what they ask for. It's a non-fatal warning today (EBADENGINE), not
-# what broke the deployment, but it's worth closing since a future patch
-# release of any of these tools could legitimately start requiring it.
-#
-# The commit below is a verified nixpkgs snapshot that provides Node 22.13.1,
-# comfortably inside the required range. To use a different version later,
-# find the commit that introduced it under pkgs/development/web/nodejs/ in
-# https://github.com/NixOS/nixpkgs and swap the hash.
 [phases.setup]
 nixpkgsArchive = "51ad838b03a05b1de6f9f2a0fffecee64a9788ee"
+aptPkgs = ["curl"]

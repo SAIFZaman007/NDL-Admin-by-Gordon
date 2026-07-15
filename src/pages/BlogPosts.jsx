@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Pencil, Trash2, Newspaper } from 'lucide-react';
-import apiClient from '../api/client';
+import React, { useState, useEffect, useRef } from 'react';
+import { Plus, Pencil, Trash2, Newspaper, ImagePlus, X } from 'lucide-react';
+import apiClient, { API_BASE } from '../api/client';
 import DataTable from '../components/ui/DataTable';
 import PageLoader from '../components/ui/PageLoader';
 import EmptyState from '../components/ui/EmptyState';
@@ -10,19 +10,74 @@ import Toggle from '../components/ui/Toggle';
 
 const EMPTY_POST = { title: '', excerpt: '', content: '', category: '', coverImage: '', readTime: '5 min read', published: false };
 
+// Uploaded covers are stored by the backend as relative paths
+const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '');
+export const resolveImageUrl = (url) => (url && url.startsWith('/') ? `${API_ORIGIN}${url}` : url);
+
+// Mirror the backend's validation so obvious mistakes are caught before a network round-trip. The backend re-validates everything regardless.
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB — matches blog_router.py
+
 function BlogFormModal({ initial, onClose, onSaved }) {
   const [form, setForm] = useState(initial || EMPTY_POST);
   const [saving, setSaving] = useState(false);
+  const [coverFile, setCoverFile] = useState(null);      
+  const [coverPreview, setCoverPreview] = useState(null);
+  const [fileError, setFileError] = useState('');
+  const fileInputRef = useRef(null);
   const isEdit = !!initial?.id;
+
+  // Object URLs hold browser memory until revoked — clean up on change/unmount.
+  useEffect(() => () => { if (coverPreview) URL.revokeObjectURL(coverPreview); }, [coverPreview]);
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setFileError('Unsupported file type. Use JPEG, PNG, WEBP, or GIF.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE_BYTES) {
+      setFileError('Image is larger than 5 MB. Please choose a smaller file.');
+      e.target.value = '';
+      return;
+    }
+    setFileError('');
+    if (coverPreview) URL.revokeObjectURL(coverPreview);
+    setCoverFile(file);
+    setCoverPreview(URL.createObjectURL(file));
+  };
+
+  const clearSelectedFile = () => {
+    if (coverPreview) URL.revokeObjectURL(coverPreview);
+    setCoverFile(null);
+    setCoverPreview(null);
+    setFileError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
+      // The backend's POST /blog and PUT /blog/{id} now consume multipart/form-data with coverImage as an actual file upload.
+      const payload = new FormData();
+      payload.append('title', form.title);
+      payload.append('excerpt', form.excerpt);
+      payload.append('content', form.content);
+      payload.append('category', form.category);
+      payload.append('readTime', form.readTime || '5 min read');
+      payload.append('published', form.published ? 'true' : 'false');
+      if (coverFile) {
+        // Only send coverImage when the admin actually picked a file — on edit, omitting it keeps the current image untouched.
+        payload.append('coverImage', coverFile);
+      }
+
       if (isEdit) {
-        await apiClient.put(`/blog/${initial.id}`, form);
+        await apiClient.put(`/blog/${initial.id}`, payload);
       } else {
-        await apiClient.post('/blog', form);
+        await apiClient.post('/blog', payload);
       }
       onSaved();
       onClose();
@@ -30,6 +85,9 @@ function BlogFormModal({ initial, onClose, onSaved }) {
       setSaving(false);
     }
   };
+
+  // What to show in the preview slot: the freshly picked file wins, otherwise the post's existing image (on edit), otherwise nothing.
+  const previewSrc = coverPreview || (isEdit ? resolveImageUrl(form.coverImage) : null);
 
   return (
     <Modal title={isEdit ? 'Edit Post' : 'New Blog Post'} onClose={onClose} maxWidth="max-w-2xl">
@@ -48,10 +106,54 @@ function BlogFormModal({ initial, onClose, onSaved }) {
             <input className="field-input" value={form.readTime} onChange={e => setForm({ ...form, readTime: e.target.value })} placeholder="5 min read" />
           </div>
         </div>
+
+        {/* Cover image — uploaded directly from the admin's device */}
         <div>
-          <label className="field-label">Cover Image URL</label>
-          <input className="field-input" value={form.coverImage || ''} onChange={e => setForm({ ...form, coverImage: e.target.value })} placeholder="https://…" />
+          <label className="field-label">Cover Image</label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ALLOWED_IMAGE_TYPES.join(',')}
+            onChange={handleFileChange}
+            className="hidden"
+            id="blog-cover-file"
+          />
+          {previewSrc ? (
+            <div className="relative rounded-xl overflow-hidden border border-white/10">
+              <img src={previewSrc} alt="Cover preview" className="w-full h-40 object-cover" />
+              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between px-3 py-2 bg-black/60 backdrop-blur-sm">
+                <span className="text-xs text-slate-300 truncate pr-2">
+                  {coverFile ? coverFile.name : 'Current cover image'}
+                </span>
+                <div className="flex items-center space-x-2 shrink-0">
+                  <button type="button" onClick={() => fileInputRef.current?.click()} className="btn-ghost px-2! py-1! text-xs">
+                    Replace
+                  </button>
+                  {coverFile && (
+                    <button type="button" onClick={clearSelectedFile} className="btn-ghost px-2! py-1! text-xs text-red-400!" title="Discard selected file">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full h-28 rounded-xl border border-dashed border-white/15 hover:border-blue-400/50 hover:bg-white/2 transition flex flex-col items-center justify-center space-y-1.5 text-slate-500 hover:text-slate-300"
+            >
+              <ImagePlus className="h-5 w-5" />
+              <span className="text-xs font-medium">Click to upload a cover image from your device</span>
+              <span className="text-[10px]">JPEG, PNG, WEBP or GIF — up to 5 MB</span>
+            </button>
+          )}
+          {fileError && <p className="text-xs text-red-400 mt-1.5">{fileError}</p>}
+          {isEdit && !coverFile && (
+            <p className="text-[11px] text-slate-600 mt-1.5">Leave as-is to keep the current image — uploading a new file replaces it.</p>
+          )}
         </div>
+
         <div>
           <label className="field-label">Excerpt</label>
           <textarea required className="field-textarea" style={{ minHeight: 60 }} value={form.excerpt} onChange={e => setForm({ ...form, excerpt: e.target.value })} />
@@ -112,7 +214,21 @@ function BlogPosts() {
       ) : (
         <DataTable
           columns={[
-            { key: 'title', label: 'Title' },
+            {
+              key: 'title', label: 'Title',
+              render: (p) => (
+                <div className="flex items-center space-x-3">
+                  {p.coverImage ? (
+                    <img src={resolveImageUrl(p.coverImage)} alt="" className="h-8 w-12 rounded object-cover border border-white/10 shrink-0" />
+                  ) : (
+                    <div className="h-8 w-12 rounded bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                      <Newspaper className="h-3.5 w-3.5 text-slate-600" />
+                    </div>
+                  )}
+                  <span>{p.title}</span>
+                </div>
+              ),
+            },
             { key: 'category', label: 'Category', render: (p) => <span className="badge badge-purple">{p.category}</span> },
             {
               key: 'published', label: 'Status',
@@ -130,8 +246,8 @@ function BlogPosts() {
           rows={posts}
           actions={(post) => (
             <div className="flex justify-end space-x-1.5">
-              <button onClick={() => setModal(post)} className="btn-ghost !px-2 !py-1.5"><Pencil className="h-3.5 w-3.5" /></button>
-              <button onClick={() => setDeleteTarget(post)} className="btn-ghost !px-2 !py-1.5 !text-red-400"><Trash2 className="h-3.5 w-3.5" /></button>
+              <button onClick={() => setModal(post)} className="btn-ghost px-2! py-1.5!"><Pencil className="h-3.5 w-3.5" /></button>
+              <button onClick={() => setDeleteTarget(post)} className="btn-ghost px-2! py-1.5! text-red-400!"><Trash2 className="h-3.5 w-3.5" /></button>
             </div>
           )}
         />
