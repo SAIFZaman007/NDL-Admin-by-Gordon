@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Pencil, Trash2, BookOpen, Layers, ArrowLeft } from 'lucide-react';
-import apiClient from '../api/client';
+import React, { useState, useEffect, useRef } from 'react';
+import { Plus, Pencil, Trash2, BookOpen, Layers, ArrowLeft, ImagePlus, X } from 'lucide-react';
+import apiClient, { API_BASE } from '../api/client';
 import DataTable from '../components/ui/DataTable';
 import PageLoader from '../components/ui/PageLoader';
 import EmptyState from '../components/ui/EmptyState';
@@ -11,19 +11,84 @@ const DIFFICULTIES = ['Beginner', 'Intermediate', 'Advanced'];
 const EMPTY_COURSE = { title: '', description: '', thumbnailUrl: '', difficulty: 'Beginner' };
 const EMPTY_LESSON = { title: '', videoUrl: '', textContent: '', orderIndex: 1 };
 
+// Uploaded thumbnails are stored by the backend as relative paths
+// ("/uploads/courses/<file>") and served from the API origin, while seeded
+// courses hold absolute "https://..." Unsplash URLs. This resolves both
+// correctly, wherever the dashboard is deployed. (Same pattern as BlogPosts.jsx.)
+const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '');
+const resolveImageUrl = (url) => (url && url.startsWith('/') ? `${API_ORIGIN}${url}` : url);
+
+// Mirror the backend's validation so obvious mistakes are caught before a
+// network round-trip. The backend re-validates everything regardless.
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB — matches courses_router.py
+
 function CourseFormModal({ initial, onClose, onSaved }) {
   const [form, setForm] = useState(initial || EMPTY_COURSE);
   const [saving, setSaving] = useState(false);
+  const [thumbnailFile, setThumbnailFile] = useState(null);      // File chosen from the device (null = keep existing, on edit)
+  const [thumbnailPreview, setThumbnailPreview] = useState(null); // Local object URL for instant preview
+  const [fileError, setFileError] = useState('');
+  const fileInputRef = useRef(null);
   const isEdit = !!initial?.id;
+
+  // Object URLs hold browser memory until revoked — clean up on change/unmount.
+  useEffect(() => () => { if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview); }, [thumbnailPreview]);
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setFileError('Unsupported file type. Use JPEG, PNG, WEBP, or GIF.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE_BYTES) {
+      setFileError('Image is larger than 5 MB. Please choose a smaller file.');
+      e.target.value = '';
+      return;
+    }
+    setFileError('');
+    if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview);
+    setThumbnailFile(file);
+    setThumbnailPreview(URL.createObjectURL(file));
+  };
+
+  const clearSelectedFile = () => {
+    if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview);
+    setThumbnailFile(null);
+    setThumbnailPreview(null);
+    setFileError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // Course.thumbnailUrl is required in the schema, so a new course must
+    // ship with an image — the backend enforces this too, but catching it
+    // here avoids a pointless round-trip.
+    if (!isEdit && !thumbnailFile) {
+      setFileError('A thumbnail image is required.');
+      return;
+    }
     setSaving(true);
     try {
+      // courses_router.py's POST /courses and PUT /courses/{id} now consume
+      // multipart/form-data with thumbnailUrl as an actual file upload.
+      const payload = new FormData();
+      payload.append('title', form.title);
+      payload.append('description', form.description);
+      payload.append('difficulty', form.difficulty);
+      if (thumbnailFile) {
+        // Required on create; optional on edit — omitting it on edit keeps
+        // the existing thumbnail untouched.
+        payload.append('thumbnailUrl', thumbnailFile);
+      }
+
       if (isEdit) {
-        await apiClient.put(`/courses/${initial.id}`, form);
+        await apiClient.put(`/courses/${initial.id}`, payload);
       } else {
-        await apiClient.post('/courses', form);
+        await apiClient.post('/courses', payload);
       }
       onSaved();
       onClose();
@@ -31,6 +96,10 @@ function CourseFormModal({ initial, onClose, onSaved }) {
       setSaving(false);
     }
   };
+
+  // What to show in the preview slot: the freshly picked file wins,
+  // otherwise the course's existing thumbnail (on edit), otherwise nothing.
+  const previewSrc = thumbnailPreview || (isEdit ? resolveImageUrl(form.thumbnailUrl) : null);
 
   return (
     <Modal title={isEdit ? 'Edit Course' : 'New Course'} onClose={onClose}>
@@ -43,10 +112,57 @@ function CourseFormModal({ initial, onClose, onSaved }) {
           <label className="field-label">Description</label>
           <textarea required className="field-textarea" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
         </div>
+
+        {/* Thumbnail image — uploaded directly from the admin's device */}
         <div>
-          <label className="field-label">Thumbnail URL</label>
-          <input required className="field-input" value={form.thumbnailUrl} onChange={e => setForm({ ...form, thumbnailUrl: e.target.value })} placeholder="https://…" />
+          <label className="field-label">Thumbnail Image</label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ALLOWED_IMAGE_TYPES.join(',')}
+            onChange={handleFileChange}
+            className="hidden"
+            id="course-thumbnail-file"
+          />
+          {previewSrc ? (
+            <div className="relative rounded-xl overflow-hidden border border-white/10">
+              <img src={previewSrc} alt="Thumbnail preview" className="w-full h-40 object-cover" />
+              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between px-3 py-2 bg-black/60 backdrop-blur-sm">
+                <span className="text-xs text-slate-300 truncate pr-2">
+                  {thumbnailFile ? thumbnailFile.name : 'Current thumbnail image'}
+                </span>
+                <div className="flex items-center space-x-2 shrink-0">
+                  <button type="button" onClick={() => fileInputRef.current?.click()} className="btn-ghost !px-2 !py-1 text-xs">
+                    Replace
+                  </button>
+                  {thumbnailFile && (
+                    <button type="button" onClick={clearSelectedFile} className="btn-ghost !px-2 !py-1 text-xs !text-red-400" title="Discard selected file">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full h-28 rounded-xl border border-dashed border-white/15 hover:border-blue-400/50 hover:bg-white/[0.02] transition flex flex-col items-center justify-center space-y-1.5 text-slate-500 hover:text-slate-300"
+            >
+              <ImagePlus className="h-5 w-5" />
+              <span className="text-xs font-medium">Click to upload a thumbnail image from your device</span>
+              <span className="text-[10px]">JPEG, PNG, WEBP or GIF — up to 5 MB</span>
+            </button>
+          )}
+          {fileError && <p className="text-xs text-red-400 mt-1.5">{fileError}</p>}
+          {isEdit && !thumbnailFile && (
+            <p className="text-[11px] text-slate-600 mt-1.5">Leave as-is to keep the current image — uploading a new file replaces it.</p>
+          )}
+          {!isEdit && (
+            <p className="text-[11px] text-slate-600 mt-1.5">Required — every course needs a thumbnail image.</p>
+          )}
         </div>
+
         <div>
           <label className="field-label">Difficulty</label>
           <select className="field-select" value={form.difficulty} onChange={e => setForm({ ...form, difficulty: e.target.value })}>
@@ -223,7 +339,21 @@ function Courses() {
       ) : (
         <DataTable
           columns={[
-            { key: 'title', label: 'Title' },
+            {
+              key: 'title', label: 'Title',
+              render: (c) => (
+                <div className="flex items-center space-x-3">
+                  {c.thumbnailUrl ? (
+                    <img src={resolveImageUrl(c.thumbnailUrl)} alt="" className="h-8 w-12 rounded object-cover border border-white/10 shrink-0" />
+                  ) : (
+                    <div className="h-8 w-12 rounded bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                      <BookOpen className="h-3.5 w-3.5 text-slate-600" />
+                    </div>
+                  )}
+                  <span>{c.title}</span>
+                </div>
+              ),
+            },
             { key: 'difficulty', label: 'Difficulty', render: (c) => <span className="badge badge-blue">{c.difficulty}</span> },
             { key: 'lessons', label: 'Lessons', render: (c) => c.lessons?.length || 0 },
           ]}
