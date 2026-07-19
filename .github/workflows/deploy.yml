@@ -1,0 +1,60 @@
+name: Dashboard CI/CD - Hostinger VPS Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Hostinger VPS
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy project files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: "."
+          target: "~/gordon-dashboard"
+
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+            echo "=== Starting dashboard deployment ==="
+            cd ~/gordon-dashboard
+
+            echo "=== Rebuilding Docker image ==="
+            docker build \
+              --build-arg VITE_API_BASE="https://api.networkdesignlabs.nl/api" \
+              --build-arg VITE_FRONTEND_URL="https://networkdesignlabs.nl" \
+              -t gordon-dashboard .
+
+            echo "=== Ensuring Docker Network exists ==="
+            docker network create gordon-net || true
+
+            echo "=== Stopping old container ==="
+            docker stop gordon-dashboard-container || true
+            docker rm gordon-dashboard-container || true
+
+            echo "=== Starting new container ==="
+            docker run -d \
+              --name gordon-dashboard-container \
+              --network gordon-net \
+              --restart unless-stopped \
+              -p 3001:3001 \
+              gordon-dashboard
+
+            echo "=== Deployment completed successfully! ==="
