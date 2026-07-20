@@ -38,8 +38,8 @@ jobs:
 
             echo "=== Rebuilding Docker image ==="
             docker build \
-              --build-arg VITE_API_BASE="http://82.165.248.250:8000/api" \
-              --build-arg VITE_FRONTEND_URL="http://82.165.248.250:3000" \
+              --build-arg VITE_API_BASE="https://api.networkdesignlabs.com/api" \
+              --build-arg VITE_FRONTEND_URL="https://networkdesignlabs.com" \
               -t gordon-dashboard .
 
             echo "=== Ensuring Docker Network exists ==="
