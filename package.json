@@ -3,10 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Gordon IT Academy — admin dashboard (courses, blog, users, subscriptions, stats). Isolated from the customer/student site, deployed to its own subdomain.",
+  "description": "Gordon IT Academy \u2014 admin dashboard (courses, blog, users, subscriptions, stats). Isolated from the customer/student site, deployed to its own subdomain.",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node init && vite",
+    "build": "node init && vite build",
     "lint": "oxlint",
     "preview": "vite preview"
   },
